@@ -178,7 +178,8 @@ if ! test -x /usr/local/bin/xray; then
   exit 1
 fi
 
-# 写入 Reality 配置
+# 写入 Reality 配置。出站优先用 IPv4：Lightsail 实例同时有 IPv6，不指定的话访问支持 IPv6 的网站
+# （比如 ChatGPT）会从服务器的 IPv6 出去，和 IPv4 显示的国家不一致；目标网站没有 IPv4 时才退回 IPv6
 cat > /usr/local/etc/xray/config.json <<'CONFIG'
 {
   "log": { "loglevel": "warning" },
@@ -200,7 +201,10 @@ cat > /usr/local/etc/xray/config.json <<'CONFIG'
       }
     }
   }],
-  "outbounds": [{ "protocol": "freedom" }]
+  "outbounds": [{
+    "protocol": "freedom",
+    "streamSettings": { "sockopt": { "domainStrategy": "UseIPv4" } }
+  }]
 }
 CONFIG
 

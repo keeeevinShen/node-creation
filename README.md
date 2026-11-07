@@ -80,6 +80,7 @@ curl -fsSL https://raw.githubusercontent.com/keeeevinShen/node-creation/main/dep
 | 本地文件 | `~/reality/reality-node.txt` | 只有一行节点链接，权限 600 |
 
 - 密钥在 CloudShell 里生成，私钥只写进服务器的 Xray 配置，不会显示在屏幕上。
+- 服务器访问网站时优先用 IPv4 出口。实例本身也有 IPv6，但 AWS 的 IPv6 常被地理位置数据库标成别的国家，ChatGPT 这类服务还会把 IPv4、IPv6 位置不一致视为风险。
 - `--destroy` 和 `--newip` 只操作带 `managed-by=deploy.sh` 标签的实例，不会误删你自己的服务器。
 - 同一个区域里重复运行不会重复创建：发现同名节点已存在就停下，提示用 `--show`、`--destroy` 或 `--name`。
 - 二维码用 Python 的 `qrcode` 库画，第一次运行时自动装到 `~/.local/lib/reality-qrcode`。
