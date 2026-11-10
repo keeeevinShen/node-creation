@@ -25,6 +25,16 @@
 
 > 也可以不用 curl：下载 `deploy.sh`，在 CloudShell 右上角 Actions → Upload file 上传，然后运行 `bash deploy.sh`。
 
+## 用不了 CloudShell：用 Chrome 插件版
+
+有的 AWS 账号打不开 CloudShell，这时用插件版 [`VPS-AWS部署插件.zip`](VPS-AWS%E9%83%A8%E7%BD%B2%E6%8F%92%E4%BB%B6.zip)。它在 Lightsail 控制台里自动点完建实例的流程，服务器上装的是 3X-UI 面板 + VLESS Reality 入站，部署完自动打开面板并登录，节点链接和二维码在面板里看。
+
+1. 下载 `VPS-AWS部署插件.zip` 并解压，得到 `lightsail-node-extension` 文件夹，放到一个不会删的位置。
+2. Chrome 打开 `chrome://extensions`，打开右上角「开发者模式」，点「加载已解压的扩展程序」，选这个文件夹。
+3. 在已登录 AWS 的 Chrome 里点插件图标，选账号，点「创建并部署」，约 3 分钟后面板自动打开。
+
+详细用法和出错处理见压缩包里的 `README.md`。插件建的节点用插件和 Lightsail 控制台管理，下面的 `--show`、`--newip`、`--destroy` 对它不起作用。
+
 ## 导入客户端
 
 | 设备 | 客户端 | 导入方式 |
