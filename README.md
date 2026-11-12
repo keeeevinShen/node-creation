@@ -31,7 +31,8 @@
 
 1. 下载 `VPS-AWS部署插件.zip` 并解压，得到 `lightsail-node-extension` 文件夹，放到一个不会删的位置。
 2. Chrome 打开 `chrome://extensions`，打开右上角「开发者模式」，点「加载已解压的扩展程序」，选这个文件夹。
-3. 在已登录 AWS 的 Chrome 里点插件图标，选账号，点「创建并部署」，约 3 分钟后面板自动打开。
+3. 在已登录 AWS 的 Chrome 里点插件图标，选账号和部署区域，点「创建并部署」，约 3 分钟后面板自动打开。插件会把实例的 IPv6 关掉，改成纯 IPv4。
+4. 更新插件时，用新文件夹覆盖旧的，再到 `chrome://extensions` 点插件上的刷新按钮，否则在 Lightsail 页面上跑的还是旧代码。
 
 详细用法和出错处理见压缩包里的 `README.md`。插件建的节点用插件和 Lightsail 控制台管理，下面的 `--show`、`--newip`、`--destroy` 对它不起作用。
 
