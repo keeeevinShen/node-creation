@@ -6,7 +6,8 @@
 #   bash deploy.sh --show      再次显示链接和二维码
 #   bash deploy.sh --newip     IP 被墙后换一个新 IP（UUID 和密钥不变）
 #   bash deploy.sh --destroy   删除节点，停止计费（加 --yes 跳过确认）
-# 其他参数：--name 节点名（默认 reality-node）、--region 区域、--sni 伪装网站、--port 端口
+# 其他参数：--name 节点名（默认 reality-node）、--region 区域、--sni 伪装网站、--port 端口、
+#           --xray Xray 版本（默认 v26.6.27，新旧客户端都能连；latest 表示装最新版）
 # 用 curl 运行时，参数写在 bash -s -- 后面：curl -fsSL <脚本地址> | bash -s -- --show
 set -euo pipefail
 
@@ -145,11 +146,24 @@ gen_user_data() {
   local short_id="$3"
   local sni="$4"
   local port="$5"
+  local xray_version="$6"
+
+  # 官方安装脚本不带 --version 时装最新版
+  local version_args=""
+  if [[ "$xray_version" != "latest" ]]; then
+    version_args="--version $xray_version"
+  fi
 
   cat <<EOF
 #!/bin/sh
 # 注意：Lightsail 用 /bin/sh 运行本脚本，只能用 POSIX sh 语法
 set -eu
+
+# 开 BBR：默认的 cubic 一丢包就大幅降速，国内到海外的线路延迟高、会丢包，BBR 快很多。重启后仍生效
+echo tcp_bbr > /etc/modules-load.d/bbr.conf || true
+printf 'net.core.default_qdisc = fq\nnet.ipv4.tcp_congestion_control = bbr\n' > /etc/sysctl.d/99-bbr.conf || true
+modprobe tcp_bbr || true
+sysctl -p /etc/sysctl.d/99-bbr.conf || true
 
 # 安装依赖：等待系统自带的自动更新释放 apt 锁，下载失败自动重试。
 # 挂静态 IP 时公网 IP 会变，正在进行的下载可能断开，所以整步再包一层重试
@@ -161,12 +175,12 @@ for i in 1 2 3 4 5; do
   sleep 10
 done
 
-# 用官方脚本安装 Xray，会注册 systemd 服务。
+# 用官方脚本安装 Xray（${xray_version}），会注册 systemd 服务。
 # 同样可能被换 IP 打断：先把安装脚本下载成文件（下载失败才能被发现），再限时运行，失败就重试
 for i in 1 2 3 4 5; do
   if curl -fsSL --connect-timeout 10 --max-time 60 --retry 5 --retry-all-errors \\
       -o /root/xray-install.sh https://github.com/XTLS/Xray-install/raw/main/install-release.sh \\
-    && timeout 300 bash /root/xray-install.sh install; then
+    && timeout 300 bash /root/xray-install.sh install ${version_args}; then
     break
   fi
   sleep 10
@@ -179,7 +193,9 @@ if ! test -x /usr/local/bin/xray; then
 fi
 
 # 写入 Reality 配置。出站优先用 IPv4：Lightsail 实例同时有 IPv6，不指定的话访问支持 IPv6 的网站
-# （比如 ChatGPT）会从服务器的 IPv6 出去，和 IPv4 显示的国家不一致；目标网站没有 IPv4 时才退回 IPv6
+# （比如 ChatGPT）会从服务器的 IPv6 出去，和 IPv4 显示的国家不一致；目标网站没有 IPv4 时才退回 IPv6。
+# sniffing 一定要开：客户端本地 DNS 被污染时，交给节点的是假 IP，服务器照着连会超时（表现是连得上但
+# Google 打不开）；开了以后 Xray 从 TLS / HTTP / QUIC 握手里读出真实域名，在服务器上重新解析
 cat > /usr/local/etc/xray/config.json <<'CONFIG'
 {
   "log": { "loglevel": "warning" },
@@ -190,6 +206,7 @@ cat > /usr/local/etc/xray/config.json <<'CONFIG'
       "clients": [{ "id": "${uuid}", "flow": "xtls-rprx-vision" }],
       "decryption": "none"
     },
+    "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"] },
     "streamSettings": {
       "network": "tcp",
       "security": "reality",
@@ -352,7 +369,9 @@ wait_reality_ready() {
 
 # ---------- 节点链接 ----------
 
-# 拼出 vless:// 链接，格式和 3X-UI 导出的一致（已在 Shadowrocket、Hiddify 上验证）
+# 拼出 vless:// 链接，参数和顺序跟 3X-UI 面板导出的一致。
+# support-x25519mlkem768=true 是面板也会带的提示：Mihomo 系客户端靠它在握手里带上 X25519MLKEM768，
+# 连 Xray v26.9.8 及以后的服务端必须有；不认识这个参数的客户端会忽略它
 build_link() {
   local uuid="$1"
   local ip="$2"
@@ -361,7 +380,7 @@ build_link() {
   local pub="$5"
   local short_id="$6"
   local remark="$7"
-  echo "vless://${uuid}@${ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub}&sid=${short_id}&type=tcp#${remark}"
+  echo "vless://${uuid}@${ip}:${port}?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=${pub}&security=reality&sid=${short_id}&sni=${sni}&spx=%2F&support-x25519mlkem768=true&type=tcp#${remark}"
 }
 
 # 从链接里取出 IP（@ 和后面第一个 : 之间）
@@ -483,6 +502,7 @@ deploy_node() {
   local sni="$4"
   local port="$5"
   local file="$6"
+  local xray_version="$7"
 
   # 同名实例或静态 IP 已存在就不部署（上次失败可能留下了没挂上的静态 IP）
   local state
@@ -528,7 +548,7 @@ deploy_node() {
 
   # 生成服务器开机脚本
   local user_data
-  user_data=$(gen_user_data "$uuid" "$priv" "$short_id" "$sni" "$port")
+  user_data=$(gen_user_data "$uuid" "$priv" "$short_id" "$sni" "$port" "$xray_version")
 
   # 创建实例并等到 running（running 只表示机器开了，Xray 还在后台安装）
   echo "创建实例 $name（$az，$bundle，$blueprint）…" >&2
@@ -591,7 +611,7 @@ deploy_node() {
   fi
 
   # 就绪检测
-  echo "服务器正在安装 Xray，一般需要 1–3 分钟…" >&2
+  echo "服务器正在安装 Xray（$xray_version），一般需要 1–3 分钟…" >&2
   local ready
   ready=$(wait_reality_ready "$ip" "$port" "$sni")
   if [[ "$ready" != "ok" ]]; then
@@ -615,7 +635,7 @@ deploy_node() {
     note="链接没能保存到本地，请自己复制保存。"
   fi
   echo >&2
-  echo "部署完成（$region，IP $ip）"
+  echo "部署完成（$region，IP $ip，Xray $xray_version）"
   echo
   print_node "$link" "$note"
 }
@@ -887,6 +907,10 @@ main() {
   local sni="aws.amazon.com"
   local port="443"
   local name="reality-node"
+  # Xray 从 v26.9.8 起，REALITY 服务端会拒绝握手里不带 X25519MLKEM768 的客户端（旧版小火箭、
+  # sing-box 内核的客户端等），服务器日志是 authentication failed or validation criteria not met。
+  # v26.6.27 是最后一个新旧客户端都放行的版本，所以默认装它
+  local xray_version="v26.6.27"
   local mode="deploy"
   local yes="no"
   while [[ $# -gt 0 ]]; do
@@ -895,6 +919,7 @@ main() {
       --sni) sni="$2"; shift 2 ;;
       --port) port="$2"; shift 2 ;;
       --name) name="$2"; shift 2 ;;
+      --xray) xray_version="$2"; shift 2 ;;
       --yes) yes="yes"; shift ;;
       --show|--destroy|--newip)
         if [[ "$mode" != "deploy" ]]; then
@@ -919,6 +944,10 @@ main() {
   fi
   if [[ ! "$sni" =~ ^[A-Za-z0-9.-]+$ ]]; then
     echo "--sni 要是一个域名，比如 aws.amazon.com" >&2
+    exit 1
+  fi
+  if [[ ! "$xray_version" =~ ^(latest|v[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+    echo "--xray 要是 latest 或一个版本号，比如 v26.6.27" >&2
     exit 1
   fi
 
@@ -951,7 +980,7 @@ main() {
   case "$mode" in
     destroy) destroy_node "$region" "$name" "$file" "$yes" ;;
     newip) new_ip_node "$region" "$name" "$file" ;;
-    *) deploy_node "$region" "$bundle" "$name" "$sni" "$port" "$file" ;;
+    *) deploy_node "$region" "$bundle" "$name" "$sni" "$port" "$file" "$xray_version" ;;
   esac
 }
 

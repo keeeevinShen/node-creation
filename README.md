@@ -4,6 +4,7 @@
 
 - 服务器：AWS Lightsail 最便宜的带公网 IPv4 的 Linux 套餐（美国区域约 5 美元/月，含 1TB 流量）
 - 协议：VLESS + Reality + xtls-rprx-vision，服务端是纯 Xray，没有面板
+- 默认开好 Sniffing 和 BBR，Xray 装的是新旧客户端都能连的 v26.6.27（原因见[常见问题](#常见问题)）
 - 区域、套餐、系统、密钥全部自动决定，不需要填任何配置
 
 ## 前提
@@ -32,6 +33,7 @@
 1. 下载 `VPS-AWS部署插件.zip` 并解压，得到 `lightsail-node-extension` 文件夹，放到一个不会删的位置。
 2. Chrome 打开 `chrome://extensions`，打开右上角「开发者模式」，点「加载已解压的扩展程序」，选这个文件夹。
 3. 在已登录 AWS 的 Chrome 里点插件图标，选账号和部署区域，点「创建并部署」，约 3 分钟后面板自动打开。插件会把实例的 IPv6 关掉，改成纯 IPv4。
+   服务器上同样开好 Sniffing 和 BBR；「Xray 内核」默认是兼容版 v26.6.27，也可以选面板自带的最新版。
 4. 更新插件时，用新文件夹覆盖旧的，再到 `chrome://extensions` 点插件上的刷新按钮，否则在 Lightsail 页面上跑的还是旧代码。
 
 详细用法和出错处理见压缩包里的 `README.md`。插件建的节点用插件和 Lightsail 控制台管理，下面的 `--show`、`--newip`、`--destroy` 对它不起作用。
@@ -71,7 +73,7 @@ curl -fsSL https://raw.githubusercontent.com/keeeevinShen/node-creation/main/dep
 curl -fsSL https://raw.githubusercontent.com/keeeevinShen/node-creation/main/deploy.sh | bash -s -- --destroy --name node2
 ```
 
-其他可选参数：`--region`（指定区域）、`--sni`（伪装网站，默认 `aws.amazon.com`）、`--port`（端口，默认 443）。一般不需要改。
+其他可选参数：`--region`（指定区域）、`--sni`（伪装网站，默认 `aws.amazon.com`）、`--port`（端口，默认 443）、`--xray`（Xray 版本，默认 `v26.6.27`；`--xray latest` 装最新版，只有握手里带 X25519MLKEM768 的新客户端能连）。一般不需要改。
 
 ## 费用
 
@@ -91,6 +93,9 @@ curl -fsSL https://raw.githubusercontent.com/keeeevinShen/node-creation/main/dep
 | 本地文件 | `~/reality/reality-node.txt` | 只有一行节点链接，权限 600 |
 
 - 密钥在 CloudShell 里生成，私钥只写进服务器的 Xray 配置，不会显示在屏幕上。
+- 入站开了 Sniffing（HTTP、TLS、QUIC）：客户端本地 DNS 被污染时，Xray 从握手里读出真实域名，在服务器上重新解析。
+- 开了 BBR（`/etc/sysctl.d/99-bbr.conf`，重启后仍生效）：国内到海外的线路延迟高、会丢包，比默认的 cubic 快很多。
+- Xray 用官方安装脚本装指定版本，默认 v26.6.27。
 - 服务器访问网站时优先用 IPv4 出口。实例本身也有 IPv6，但 AWS 的 IPv6 常被地理位置数据库标成别的国家，ChatGPT 这类服务还会把 IPv4、IPv6 位置不一致视为风险。
 - `--destroy` 和 `--newip` 只操作带 `managed-by=deploy.sh` 标签的实例，不会误删你自己的服务器。
 - 同一个区域里重复运行不会重复创建：发现同名节点已存在就停下，提示用 `--show`、`--destroy` 或 `--name`。
@@ -110,6 +115,37 @@ systemctl status xray
 ```
 
 想删掉重来就运行 `--destroy`。
+
+**客户端参数都对，就是连不上（Mac 上的小火箭报 `CERTIFICATE_VERIFY_FAILED`、Clash 报 `REALITY authentication failed`、sing-box 报 `reality verification failed`）**
+用浏览器 SSH 连上服务器看日志：`sudo journalctl -u xray --since '-30 min' --no-pager | grep REALITY | tail`（插件版是 `-u x-ui`）。如果是
+
+```
+REALITY: processed invalid connection from …: authentication failed or validation criteria not met
+```
+
+而链接里的 pbk、sid、sni 和服务器一致，原因是 Xray 内核太新：从 v26.9.8 起，REALITY 服务端会拒绝握手里不带 X25519MLKEM768 的客户端，旧版小火箭、sing-box 内核的客户端（包括部分版本的 Hiddify）都会被拒，改 `minClientVer` 没有用。v26.7.11–v26.9.7 另有一个问题：`minClientVer` 留空时默认只放行 v26.3.27 以上的客户端。v26.6.27 是最后一个两种限制都没有的版本，本脚本和插件现在默认装它。
+
+以前部署的节点（当时装的是最新版）可以这样改：
+
+- 脚本版：`--destroy` 后重新部署最省事；或者 SSH 进去运行
+  `sudo bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install --version v26.6.27`
+- 插件版：3X-UI 面板首页 → Xray 版本 → 切换到 v26.6.27。
+
+代价是 v26.6.27 之后的修复和改动它都没有。想用最新内核就加 `--xray latest`（插件里选「面板自带的最新版」），并且只用握手里带 X25519MLKEM768 的新客户端。
+
+**显示已连接，但 Google 等网站打不开**
+客户端本地的 DNS 被污染，交给节点的是假 IP，服务器照着连会超时。现在部署的节点默认开 Sniffing，不会有这个问题。以前部署的节点：脚本版重新部署；插件版在面板里编辑入站，打开 Sniffing，勾 HTTP、TLS、QUIC（不勾 Metadata Only 和 Route Only）。
+
+**从国内连很慢**
+先看节点离国内多远：东京、新加坡的延迟比美国低得多。现在部署的节点默认开 BBR；以前部署的节点 SSH 进去运行：
+
+```bash
+printf 'net.core.default_qdisc = fq\nnet.ipv4.tcp_congestion_control = bbr\n' | sudo tee /etc/sysctl.d/99-bbr.conf
+echo tcp_bbr | sudo tee /etc/modules-load.d/bbr.conf
+sudo modprobe tcp_bbr && sudo sysctl -p /etc/sysctl.d/99-bbr.conf
+```
+
+`cat /proc/sys/net/ipv4/tcp_congestion_control` 输出 `bbr` 就是开好了。
 
 **`--show` 提示找不到链接**
 CloudShell 的主目录每个区域各一份，确认控制台右上角选的是部署时的区域；部署时用了 `--name` 的话，这里也要带上。一个区域 120 天没用过 CloudShell，主目录会被清空，这时只能 `--destroy` 后重新部署。
